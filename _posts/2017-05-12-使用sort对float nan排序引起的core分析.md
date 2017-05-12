@@ -3,29 +3,30 @@
 
 在开发过程中碰到一个因为std::sort产生的 core dump，在这里记录一下并分析产生的原因。
 
-> 总结：使用 sort 进行排序时，传入的比较函数一定要满足“严格弱序”(Strict Weak Ordering)，否则就可能会出core。严格弱序可以简单的理解为：对两个数 a 和 b 进行比较时，如果有 comp(a, b) 为 true，那么一定要有 comp(b, a) 为 false 。绝对不能出现 comp(a, b) 和 comp(b, a) 同时为 true 或者同时为 false 的情况。
+    总结：使用 sort 进行排序时，传入的比较函数一定要满足“严格弱序”(Strict Weak Ordering)，否则就可能会出core。严格弱序可以简单的理解为：对两个数 a 和 b 进行比较时，如果有 comp(a, b) 为 true，那么一定要有 comp(b, a) 为 false 。绝对不能出现 comp(a, b) 和 comp(b, a) 同时为 true 或者同时为 false 的情况。
 
 ## 概念：
 
 1)  NaN: Not A Number，表示算数上无效的数，可能由于除 0 或者对负数进行开平方等计算产生。NaN有如下性质：
              
-            expression|result
-            ---|---
-            |nan < nan|false|
-            |nan > nan|false|
-            |nan == nan|false|
-            |nan != nan|true|
-            |nan < 1.0|false|
-            |nan > 1.0|false|
-            |nan != 1.0|true|
+    |expression|result|
+    |:---|---:|
+    |nan < nan|false|
+    |nan > nan|false|
+    |nan == nan|false|
+    |nan != nan|true|
+    |nan < 1.0|false|
+    |nan > 1.0|false|
+    |nan != 1.0|true|
             
 2)  std::sort: C++ STL标准库中常用的排序函数
 
-    调用方式：
-    >```
-    > std::vector<float> vec;
-    > std::sort(vec.begin(), vec.end(), comp);
-    >```
+调用方式：
+```
+ std::vector<float> vec;
+ std::sort(vec.begin(), vec.end(), comp);
+```
+
 
 ## 问题描述：
 
@@ -117,17 +118,17 @@ std::sort基于快速排序进行优化，对快速排序进行了几点改进�
 * sort 设定了一个 \_S\_threshold = 16, 首先会对数据集合进行跟快速排序同样的递归 partition 过程，当递归到一定深度，数据集合中数据的个数小于 \_S\_threshold 时，sort 会对数据集合做插入排序，而不是做快速排序。（当递归超过一定层数之后，sort 还会做堆排序，不过与本次的 case 无关，暂不讨论）
 
 * 为了提高效率，sort 对划分过程实现了未检查边界的版本 unguarded\_partition()；对插入排序过程实现了两个版本：带边界检查的版本insertion\_sort() 和不带边界检查的版本 unguarded\_linear_insert。在确定要执行插入排序的元素前面有哨兵的前提下，会调用不检查边界的版本。<span style="color:red">**这两个不带边界检查的函数是导致core的原因。**</span>
-	
-	sort的代码简化如下：
+    
+    sort的代码简化如下：
 
-	```
-	//std::sort
+    ```
+    //std::sort
     void sort(first, last, comp) {
         if (first != last) {
             //先做快排
             introsort_loop(first, last, comp);
             //再对_S_threshold范围内的元素做插入排序
-	  	    final_insertion_sort(first, last, comp);
+            final_insertion_sort(first, last, comp);
         }
     }
    
@@ -171,28 +172,28 @@ std::sort基于快速排序进行优化，对快速排序进行了几点改进�
                 unguarded_linear_insert(i, val, comp);
         }
     }
-	```
-	
+    ```
+    
 #### (2) unguarded\_partition()分析
 
 unguarded\_partition() 函数的简化代码如下：
     
-    ```
-    unguarded_partition(first, last, pivot, comp) {
-        while (true) {
-            while (comp(*first, pivot))
-                ++first
+```
+unguarded_partition(first, last, pivot, comp) {
+    while (true) {
+        while (comp(*first, pivot))
+            ++first
+        --last;
+        while (comp(pivot, *last))
             --last;
-            while (comp(pivot, *last))
-                --last;
-            if (!(first < last))
-                return first;
-            iter_swap(first, last);
-            ++first;
-        }
+        if (!(first < last))
+            return first;
+        iter_swap(first, last);
+        ++first;
     }
-    ```
-	
+}
+```
+    
 划分函数将 first 指针指向的元素、last指针指向的元素分别与 pivot 进行比较，如果比较函数返回 false，说明这个元素不应该 pivot 元素的这一边，需要与另一边同样不满足条件的一个元素对换，实现划分完成之后左边的元素都比 pivot 大，右边的元素都比 pivot 元素小。
 
 但是unguarded\_partition() 函数存在两个问题：
@@ -200,31 +201,31 @@ unguarded\_partition() 函数的简化代码如下：
 * ++first 和 --last 没有做边界检查，<span style="color:red">如果用户实现的 comp() 函数对于相同的元素返回true，极端的情况下，数组里所有元素都相同，while 循环条件一直满足，first 指针和 last 指针将会越过边界，写坏数组之外的数据，造成溢出。</span>
 
 * <span style="color:red">如果 pivot 选择的恰好是 nan ，那么根据上面测试出来的真值表，两个 while 循环中的 comp() 返回值永远都是 false ，执行的结果是整个数组中的元素镜像调换了一下顺序。***此时并不能满足划分完成之后左边的元素都比 pivot 大，右边的元素都比 pivot 元素小***</span>
-	
+    
 #### (3) unguarded\_linear\_insert() 分析
 unguarded\_linear\_insert() 函数的简化代码如下：
 
-    ```
-    //last 为要插入的元素指针，val 为要插入的元素的值
-    //要插入的元素前面为已经从大到小排好序的序列
-    void unguarded_linear_insert(last, val, comp) {
-        next = last;
+```
+//last 为要插入的元素指针，val 为要插入的元素的值
+//要插入的元素前面为已经从大到小排好序的序列
+void unguarded_linear_insert(last, val, comp) {
+    next = last;
+    --next;
+    //找到第一个比 val 大的数（comp返回false），由于假设有哨兵的存在，循环总是能够停止
+    //如果 *next 指向的值是 nan，comp() 返回 false， 循环也会终止，所以 nan 也可以起到哨兵的作用
+    while (comp(val, *next)) {
+        //如果比val小，依次往后移动
+        *last = *next;
+        last = next;
         --next;
-        //找到第一个比 val 大的数（comp返回false），由于假设有哨兵的存在，循环总是能够停止
-        //如果 *next 指向的值是 nan，comp() 返回 false， 循环也会终止，所以 nan 也可以起到哨兵的作用
-        while (comp(val, *next)) {
-            //如果比val小，依次往后移动
-            *last = *next;
-            last = next;
-            --next;
-        }
-        //把last插入到找到的最大元素后面的位置
-        *last = val;
     }
-    ```
+    //把last插入到找到的最大元素后面的位置
+    *last = val;
+}
+```
  
 从 (1) 中sort的代码可知，unguarded\_linear\_insert()会在两种情况下被调用：
-	
+    
 * 第一种是确定要插入的元素比序列中第一个元素小，由第一个元素起到哨兵的作用
 
 * 第二种是对 pivot 右边的序列进行插入排序，由于正常情况下 pivot 总是比右边的元素大，pivot 也可以作为哨兵终止 while 循环
@@ -237,22 +238,22 @@ unguarded\_linear\_insert() 函数的简化代码如下：
 为了简化过程，将 \_S\_threshold 设置为4，也就是长度对于大于等于4的序列将执行快速排序，对于长度小于4的序列，将执行插入排序。
 原始序列为：
  
-> |5.0|8.0|7.0|nan|3.0|2.0|4.0| 
+|5.0|8.0|7.0|nan|3.0|2.0|4.0| 
 |:---|:---:|:---:|:---:|:---:|:---:|---:|
  
 第一轮排序，对序列 [0 - 6] 进行排序，长度 7 > 4，进行快速排序，选择中间值 nan 作为 pivot，由(2)中的结论，序列将会进行左右镜像调换，partition 完成之后的结果为
 
-> |4.0|2.0|3.0|nan|7.0|8.0|5.0| 
+|4.0|2.0|3.0|nan|7.0|8.0|5.0| 
 |:---|:---:|:---:|:---:|:---:|:---:|---:|
 
 第二轮排序，对序列 [0 - 2] 递归进行排序，长度 3 < 4, 进行插入排序，三个值都是正常数值，排序正常进行，完成之后的结果为
 
-> |4.0|3.0|2.0|nan|7.0|8.0|5.0| 
+|4.0|3.0|2.0|nan|7.0|8.0|5.0| 
 |:---|:---:|:---:|:---:|:---:|:---:|---:|
 
 第三轮排序，对序列 [3 - 6] 递归进行排序， 长度 4 == 4， 进行快速排序，选择 7.0 作为 pivot， partition完成之后的结果为（注意此时 nan 被移动走了）
 
-> |4.0|3.0|2.0|8.0|7.0|nan|5.0| 
+|4.0|3.0|2.0|8.0|7.0|nan|5.0| 
 |:---|:---:|:---:|:---:|:---:|:---:|---:|
 
 第四轮排序，对序列 [3 - 3] 进行插入排序，此时进行的是不带边界检查的 unguarded\_linear\_insert()， 待插入的元素为 8.0， 从 8.0 往前寻找第一个比 8.0 大的数，此时前面已经没有哨兵了，while 循环会超出数组的边界一直找下去，覆盖了数组前面内存空间的值。
@@ -316,7 +317,7 @@ nextchunk-> +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
 所以在这个 case 中，begin 迭代器指向的是上图中的 mem 地址，sort 函数是覆盖了 begin 迭代器前面的数据，写坏了 prev_size 和 size 两个值，是导致 core 和 该错误提示的原因。
 
-> P.S. 除了 case 中的意外溢出写坏 chunk 信息的情况，glibc 的安全检查主要是针对堆溢出攻击做的防御，报错信息中的 double free 也是堆溢出的一种攻击方法，而不一定真是程序里进行了两次 free 操作。想要了解更多 glibc malloc 和堆管理的信息，可以参考[http://www.csyssec.org/20170104/glibcmalloc/]() 和 [http://paper.seebug.org/255/]()
+    P.S. 除了 case 中的意外溢出写坏 chunk 信息的情况，glibc 的安全检查主要是针对堆溢出攻击做的防御，报错信息中的 double free 也是堆溢出的一种攻击方法，而不一定真是程序里进行了两次 free 操作。想要了解更多 glibc malloc 和堆管理的信息，可以参考[http://www.csyssec.org/20170104/glibcmalloc/]() 和 [http://paper.seebug.org/255/]()
 
 
 ## 调试技巧
@@ -324,4 +325,3 @@ nextchunk-> +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 在本次 core 排查中帮助最大的工具是 cgdb 和 gdb 的 watch 添加硬件断点功能。
 
 调试时在 vector begin 前面的内存地址和 end 后面的内存地址上分别添加硬件断点，发生写入时程序就会中断，就明确了溢出是发生在什么时间点。
- 
